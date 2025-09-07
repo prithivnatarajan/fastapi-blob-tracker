@@ -2,3 +2,5 @@ fastapi
 uvicorn[standard]
 python-multipart
 hypercorn
+opencv-python-headless
+numpy
