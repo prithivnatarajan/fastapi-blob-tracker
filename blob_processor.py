@@ -6,8 +6,29 @@ import os
 class BlobTracker:
     def __init__(self):
         self.prev_centers = None
+        self.center_history = []  # Store center points for trail drawing
     
-    def parse_color(self, color_str):
+    def interpolate_catmull_rom(self, points, resolution=12):
+        """Smooth curve interpolation for trails"""
+        def catmull_rom_spline(p0, p1, p2, p3, t):
+            t2, t3 = t * t, t * t * t
+            return 0.5 * (
+                (2 * p1)
+                + (-p0 + p2) * t
+                + (2*p0 - 5*p1 + 4*p2 - p3) * t2
+                + (-p0 + 3*p1 - 3*p2 + p3) * t3
+            )
+        
+        if len(points) < 4:
+            return points
+        
+        result = []
+        for i in range(1, len(points) - 2):
+            p0, p1, p2, p3 = [np.array(p, dtype=np.float32) for p in points[i-1:i+3]]
+            for t in np.linspace(0, 1, resolution):
+                result.append(tuple(catmull_rom_spline(p0, p1, p2, p3, t)))
+        return result
+    
     def parse_color(self, color_str):
         """Parse color string 'R,G,B' to tuple"""
         try:
@@ -17,103 +38,108 @@ class BlobTracker:
 
     def process_image(self, image_data, params):
         """Process image data and return processed image"""
-        # Convert bytes to numpy array
-        nparr = np.frombuffer(image_data, np.uint8)
-        img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-        
-        if img is None:
-            raise ValueError("Could not decode image")
-        
-        # Convert to grayscale for blob detection
-        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-        
-        # Apply threshold
-        threshold_val = params.get('threshold', 127)
-        _, thresh = cv2.threshold(gray, threshold_val, 255, cv2.THRESH_BINARY)
-        
-        # Set up blob detector parameters
-        detector_params = cv2.SimpleBlobDetector_Params()
-        detector_params.filterByArea = True
-        detector_params.minArea = params.get('min_area', 100)
-        detector_params.maxArea = params.get('max_area', 10000)
-        detector_params.filterByCircularity = False
-        detector_params.filterByConvexity = False
-        detector_params.filterByInertia = False
-        detector_params.minThreshold = 1
-        detector_params.maxThreshold = 255
+        try:
+            # Convert bytes to numpy array
+            nparr = np.frombuffer(image_data, np.uint8)
+            img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+            
+            if img is None:
+                raise ValueError("Could not decode image")
+            
+            # Convert to grayscale for blob detection
+            gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+            
+            # Apply threshold
+            threshold_val = params.get('threshold', 127)
+            _, thresh = cv2.threshold(gray, threshold_val, 255, cv2.THRESH_BINARY)
+            
+            # Set up blob detector parameters
+            detector_params = cv2.SimpleBlobDetector_Params()
+            detector_params.filterByArea = True
+            detector_params.minArea = params.get('min_area', 100)
+            detector_params.maxArea = params.get('max_area', 10000)
+            detector_params.filterByCircularity = False
+            detector_params.filterByConvexity = False
+            detector_params.filterByInertia = False
+            detector_params.minThreshold = 1
+            detector_params.maxThreshold = 255
 
-        # Create detector and find blobs
-        detector = cv2.SimpleBlobDetector_create(detector_params)
-        keypoints = detector.detect(thresh)
-        
-        # Limit number of blobs
-        max_blobs = params.get('max_blobs', 100)
-        keypoints = sorted(keypoints, key=lambda kp: kp.size, reverse=True)[:max_blobs]
-        
-        # Extract centers
-        centers = []
-        for kp in keypoints:
-            centers.append((int(kp.pt[0]), int(kp.pt[1])))
-        
-        # Add to history for trail drawing
-        self.center_history.extend(centers)
-        # Keep only recent points (limit trail length)
-        max_trail_points = params.get('max_trail_points', 50)
-        if len(self.center_history) > max_trail_points:
-            self.center_history = self.center_history[-max_trail_points:]
-        
-        # Draw on original image
-        out_img = img.copy()
-        outline_color = self.parse_color(params.get('outline_color', '255,255,255'))
-        trail_color = self.parse_color(params.get('trail_color', '255,255,255'))
-        blob_thickness = params.get('blob_thickness', 2)
-        trail_thickness = params.get('trail_thickness', 2)
-        
-        # Draw trails first (so blobs appear on top)
-        draw_trails = params.get('draw_trails', True)
-        smooth_trails = params.get('smooth_trails', False)
-        
-        if draw_trails and len(self.center_history) >= 2:
-            trail_pts = self.center_history.copy()
+            # Create detector and find blobs
+            detector = cv2.SimpleBlobDetector_create(detector_params)
+            keypoints = detector.detect(thresh)
             
-            # Apply smoothing if requested
-            if smooth_trails and len(trail_pts) >= 4:
-                trail_pts = self.interpolate_catmull_rom(trail_pts, resolution=12)
+            # Limit number of blobs
+            max_blobs = params.get('max_blobs', 100)
+            keypoints = sorted(keypoints, key=lambda kp: kp.size, reverse=True)[:max_blobs]
             
-            # Draw trail lines
-            if len(trail_pts) >= 2:
-                pts = np.array(trail_pts, dtype=np.int32).reshape((-1, 1, 2))
-                cv2.polylines(out_img, [pts], isClosed=False, 
-                             color=trail_color, thickness=trail_thickness)
-        
-        # Draw blobs
-        for idx, kp in enumerate(keypoints):
-            cx, cy = int(kp.pt[0]), int(kp.pt[1])
-            size = int(kp.size)
+            # Extract centers
+            centers = []
+            for kp in keypoints:
+                centers.append((int(kp.pt[0]), int(kp.pt[1])))
             
-            # Calculate bounding box
-            half_size = size // 2
-            x0 = max(cx - half_size, 0)
-            y0 = max(cy - half_size, 0)
-            x1 = min(cx + half_size, img.shape[1])
-            y1 = min(cy + half_size, img.shape[0])
+            # Add to history for trail drawing
+            self.center_history.extend(centers)
+            # Keep only recent points (limit trail length)
+            max_trail_points = params.get('max_trail_points', 50)
+            if len(self.center_history) > max_trail_points:
+                self.center_history = self.center_history[-max_trail_points:]
             
-            # Draw rectangle around blob
-            if blob_thickness == -1:
-                cv2.rectangle(out_img, (x0, y0), (x1, y1), outline_color, -1)
-            else:
-                cv2.rectangle(out_img, (x0, y0), (x1, y1), outline_color, blob_thickness)
+            # Draw on original image
+            out_img = img.copy()
+            outline_color = self.parse_color(params.get('outline_color', '255,255,255'))
+            trail_color = self.parse_color(params.get('trail_color', '255,255,255'))
+            blob_thickness = params.get('blob_thickness', 2)
+            trail_thickness = params.get('trail_thickness', 2)
             
-            # Draw ID if requested
-            if params.get('show_ids', False):
-                text = f"ID {idx}"
-                font_scale = 0.5
-                cv2.putText(out_img, text, (x0, y0-10), cv2.FONT_HERSHEY_SIMPLEX, 
-                           font_scale, outline_color, 1)
-        
-        # Encode result back to bytes
-        _, buffer = cv2.imencode('.png', out_img)
-        return buffer.tobytes()
+            # Draw trails first (so blobs appear on top)
+            draw_trails = params.get('draw_trails', True)
+            smooth_trails = params.get('smooth_trails', False)
+            
+            if draw_trails and len(self.center_history) >= 2:
+                trail_pts = self.center_history.copy()
+                
+                # Apply smoothing if requested
+                if smooth_trails and len(trail_pts) >= 4:
+                    trail_pts = self.interpolate_catmull_rom(trail_pts, resolution=12)
+                
+                # Draw trail lines
+                if len(trail_pts) >= 2:
+                    pts = np.array(trail_pts, dtype=np.int32).reshape((-1, 1, 2))
+                    cv2.polylines(out_img, [pts], isClosed=False, 
+                                 color=trail_color, thickness=trail_thickness)
+            
+            # Draw blobs
+            for idx, kp in enumerate(keypoints):
+                cx, cy = int(kp.pt[0]), int(kp.pt[1])
+                size = int(kp.size)
+                
+                # Calculate bounding box
+                half_size = size // 2
+                x0 = max(cx - half_size, 0)
+                y0 = max(cy - half_size, 0)
+                x1 = min(cx + half_size, img.shape[1])
+                y1 = min(cy + half_size, img.shape[0])
+                
+                # Draw rectangle around blob
+                if blob_thickness == -1:
+                    cv2.rectangle(out_img, (x0, y0), (x1, y1), outline_color, -1)
+                else:
+                    cv2.rectangle(out_img, (x0, y0), (x1, y1), outline_color, blob_thickness)
+                
+                # Draw ID if requested
+                if params.get('show_ids', False):
+                    text = f"ID {idx}"
+                    font_scale = 0.5
+                    cv2.putText(out_img, text, (x0, y0-10), cv2.FONT_HERSHEY_SIMPLEX, 
+                               font_scale, outline_color, 1)
+            
+            # Encode result back to bytes
+            _, buffer = cv2.imencode('.png', out_img)
+            return buffer.tobytes()
+            
+        except Exception as e:
+            print(f"Error in process_image: {e}")
+            raise
 
     def process_video_frame_by_frame(self, video_data, params):
         """Process video and return processed video"""
@@ -166,6 +192,10 @@ class BlobTracker:
                 result = f.read()
             
             return result, frame_count
+            
+        except Exception as e:
+            print(f"Error in process_video: {e}")
+            raise
             
         finally:
             # Cleanup
