@@ -8,6 +8,7 @@ class BlobTracker:
         self.prev_centers = None
     
     def parse_color(self, color_str):
+    def parse_color(self, color_str):
         """Parse color string 'R,G,B' to tuple"""
         try:
             return tuple(map(int, color_str.split(',')))
@@ -49,11 +50,43 @@ class BlobTracker:
         max_blobs = params.get('max_blobs', 100)
         keypoints = sorted(keypoints, key=lambda kp: kp.size, reverse=True)[:max_blobs]
         
-        # Draw blobs on original image
+        # Extract centers
+        centers = []
+        for kp in keypoints:
+            centers.append((int(kp.pt[0]), int(kp.pt[1])))
+        
+        # Add to history for trail drawing
+        self.center_history.extend(centers)
+        # Keep only recent points (limit trail length)
+        max_trail_points = params.get('max_trail_points', 50)
+        if len(self.center_history) > max_trail_points:
+            self.center_history = self.center_history[-max_trail_points:]
+        
+        # Draw on original image
         out_img = img.copy()
         outline_color = self.parse_color(params.get('outline_color', '255,255,255'))
+        trail_color = self.parse_color(params.get('trail_color', '255,255,255'))
         blob_thickness = params.get('blob_thickness', 2)
+        trail_thickness = params.get('trail_thickness', 2)
         
+        # Draw trails first (so blobs appear on top)
+        draw_trails = params.get('draw_trails', True)
+        smooth_trails = params.get('smooth_trails', False)
+        
+        if draw_trails and len(self.center_history) >= 2:
+            trail_pts = self.center_history.copy()
+            
+            # Apply smoothing if requested
+            if smooth_trails and len(trail_pts) >= 4:
+                trail_pts = self.interpolate_catmull_rom(trail_pts, resolution=12)
+            
+            # Draw trail lines
+            if len(trail_pts) >= 2:
+                pts = np.array(trail_pts, dtype=np.int32).reshape((-1, 1, 2))
+                cv2.polylines(out_img, [pts], isClosed=False, 
+                             color=trail_color, thickness=trail_thickness)
+        
+        # Draw blobs
         for idx, kp in enumerate(keypoints):
             cx, cy = int(kp.pt[0]), int(kp.pt[1])
             size = int(kp.size)
