@@ -78,10 +78,14 @@ async def process_image(
         # Prepare processing parameters
         params = {
             'outline_color': outline_color,
+            'trail_color': trail_color,
             'blob_thickness': blob_thickness,
+            'trail_thickness': trail_thickness,
             'min_area': min_area,
             'max_area': max_area,
             'show_ids': show_ids,
+            'draw_trails': draw_trails,
+            'smooth_trails': smooth_trails,
             'threshold': threshold
         }
         
